@@ -138,7 +138,47 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+
+    # todo: 首先要熟悉计算流程，熟悉公式，然后是熟悉计算顺序，熟悉torch的一些做法，比如view只可以用在连续的张量上，比如转置.T是默认全都转置
+    # todo: view是只可以拆解合并相邻的维度
+
+    # 张量搬到GPU
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    q_proj_weight = q_proj_weight.to(device)
+    k_proj_weight = k_proj_weight.to(device)
+    v_proj_weight = v_proj_weight.to(device)
+    o_proj_weight = o_proj_weight.to(device)
+    in_features = in_features.to(device)
+
+    batch_size = in_features.shape[0]
+    sequence_length = in_features.shape[1]
+    d_k = q_proj_weight.shape[-2]
+    per_head_dk = d_k // num_heads
+    d_v = v_proj_weight.shape[-2]
+    per_head_dv = d_v // num_heads
+
+    # 相乘得到对应的参数 (b\s\d_k)(b\s\d_v)
+    # 多头后每个头的输入维度不变，但每个头的d_k或者d_v维度做了拆分（转置前是行，转置后是列）
+    Q = ((in_features @ q_proj_weight.T).view(batch_size, sequence_length, num_heads, per_head_dk)
+         .transpose(1, 2))
+    K = ((in_features @ k_proj_weight.T).view(batch_size, sequence_length, num_heads, per_head_dk)
+         .transpose(1, 2))
+    V = ((in_features @ v_proj_weight.T).view(batch_size, sequence_length, num_heads, per_head_dv)
+         .transpose(1, 2))
+
+    # 开始处理注意力机制部分，也就是个softmax,先计算，然后加上casual_mask，做softmax，
+    # 最后after_softmax维度是[batch_size, num_heads, sequence_length, sequence_length]
+    import math
+    casual_mask = torch.triu(torch.ones(sequence_length, sequence_length), diagonal=1).bool().to(device)
+    before_softmax = Q @ K.transpose(-1, -2) / math.sqrt(d_k / num_heads)
+    before_softmax = before_softmax.masked_fill(casual_mask, float("-inf"))
+    after_softmax = torch.softmax(before_softmax, dim=-1)
+    # 下面的维度是[batch_size, num_heads, sequence_length, per_head_dv]
+    after_v = after_softmax @ V
+    # 变换下拼接各个头的输出，这样就变成了[batch_size, sequence_length, dv = num_heads * per_head_dv]
+    after_concat = after_v.transpose(1, 2).contiguous().view(batch_size, sequence_length, -1)
+    # 注意最后还是要乘以o的转置才可以，dv要匹配上，最后的输出是[batch_size, sequence_length, d_model]
+    return after_concat @ o_proj_weight.T
 
 
 def run_multihead_self_attention_with_rope(
