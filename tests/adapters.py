@@ -50,8 +50,25 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
-    raise NotImplementedError
+    # embedding的每一行都是一个token_id的隐藏张量，从0一直到词表大小
+    # 对于token_id=100,那么需要构造一个行向量，其中第99个元素为1，这样与embedding的矩阵相乘就可以得到对应的
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    weights = weights.to(device)
+    # 需要构造一个[batch、sequence、vocab]的标识矩阵
+    mask = torch.zeros(token_ids.size(0), token_ids.size(1), vocab_size).to(device)
+    # [2, 0, 1] 这是一个tokenId的示例（batch, sequence）所以是一个2维的张量
+    # 下面就是需要构建的onehot方阵
+    # [0,0,1]
+    # [1,0,0]
+    # [0,1,0]
+    for batch_index in range(token_ids.size(0)):
+        for token_index in range(token_ids.size(1)):
+            # 通过batch_index拿到batch,通过token_index拿到对应的token_id，认为token_id也是从0开始的
+            token_id = token_ids[batch_index][token_index]
+            # mask矩阵对应的batch的对应tokenIndex选择token_id数值的词
+            mask[batch_index][token_index][token_id] = 1
+    #  [batch、sequence、vocab][vocab、model] = [batch、sequence、model]
+    return mask @ weights
 
 
 def run_swiglu(
