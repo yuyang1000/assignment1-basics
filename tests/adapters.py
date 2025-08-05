@@ -104,7 +104,22 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    import math
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    Q = Q.to(device) # batch、sequence、d_q
+    K = K.to(device) # batch、sequence、d_k
+    V = V.to(device) # batch、sequence、d_v
+    mask = mask.to(device) # batch、sequence、？
+
+    d_k = Q.size(-1)
+    # 矩阵维度是(batch\sequence\sequence)
+    after_softmax = torch.softmax(
+        (Q @ K.transpose(-1, -2) / math.sqrt(d_k))
+        .masked_fill(~mask, float("-inf")), dim=-1)
+    # 大多数注意力实现把 mask 定义为 “哪些位置可以被看见 / 保留”，也就是mask里面为False的都是需要被替换的
+    # masked_fill是根据布尔张量将为True的位置填充，所以需要取反
+    # 这里mask的维度是[4,12,16]为啥不是一个方阵呢？原因是这里的KQV的第2个维度就不一样，正常情况下应该是一样的吧？
+    return after_softmax @ V
 
 
 def run_multihead_self_attention(
