@@ -8,6 +8,8 @@ from jaxtyping import Float, Int
 import numpy.typing as npt
 import torch
 from torch import Tensor
+from torch._C import device
+from torch.ao.quantization.utils import weight_is_statically_quantized
 
 
 def run_linear(
@@ -100,7 +102,18 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+
+    from my_code import utils
+    w1_weight = w1_weight.to(utils.get_device())
+    w2_weight = w2_weight.to(utils.get_device())
+    w3_weight = w3_weight.to(utils.get_device())
+    in_features = in_features.to(utils.get_device())
+
+    w1_x = in_features @ w1_weight.T # [batch、sequence、d_model] [d_model, d_ff]
+    w3_x = in_features @ w3_weight.T # [batch、sequence、d_model] [d_model, d_ff]
+    si_lu = w1_x * torch.sigmoid(w1_x) # [batch、sequence、d_ff]
+    inner = si_lu * w3_x # [batch、sequence、d_ff]
+    return (inner @ w2_weight.T).to(torch.device("cpu"))
 
 
 def run_scaled_dot_product_attention(
@@ -275,6 +288,64 @@ def run_rope(
     raise NotImplementedError
 
 
+def apply_rope(tensor, max_seq_len, theta=10000.0):
+    """
+    Apply Rotary Position Embedding (RoPE) to input tensor.
+
+    Args:
+        tensor: Input tensor with shape [batch, num_heads, sequence, d_head]
+        max_seq_len: Maximum sequence length
+        theta: RoPE base parameter (default: 10000.0)
+
+    Returns:
+        Tensor with RoPE applied, same shape as input
+    """
+    import torch
+    import math
+
+    batch_size, num_heads, seq_len, d_head = tensor.shape
+    device = tensor.device
+
+    # 1. 计算每个维度对的基础角度 θ_i = 1/(theta^(2i/d_head))
+    # 只对偶数维度计算，因为RoPE是对维度对(2i, 2i+1)进行旋转
+    dim_indices = torch.arange(0, d_head, 2, dtype=torch.float32, device=device)  # [0, 2, 4, ...]
+    theta_i = 1.0 / (theta ** (dim_indices / d_head))  # shape: [d_head//2]
+
+    # 2. 计算每个位置的角度 pos * θ_i
+    positions = torch.arange(seq_len, dtype=torch.float32, device=device)  # [0, 1, 2, ..., seq_len-1]
+    # 外积得到每个位置和每个维度对的角度
+    angles = torch.outer(positions, theta_i)  # shape: [seq_len, d_head//2]
+
+    # 3. 计算cos和sin值
+    cos_angles = torch.cos(angles)  # [seq_len, d_head//2]
+    sin_angles = torch.sin(angles)  # [seq_len, d_head//2]
+
+    # 4. 扩展维度以匹配tensor的shape [batch, num_heads, seq_len, d_head//2]
+    cos_angles = cos_angles.unsqueeze(0).unsqueeze(0).expand(batch_size, num_heads, seq_len, d_head // 2)
+    sin_angles = sin_angles.unsqueeze(0).unsqueeze(0).expand(batch_size, num_heads, seq_len, d_head // 2)
+
+    # 5. 将tensor分成偶数和奇数维度
+    # tensor[:, :, :, 0::2] 是偶数维度 [batch, num_heads, seq_len, d_head//2]
+    # tensor[:, :, :, 1::2] 是奇数维度 [batch, num_heads, seq_len, d_head//2]
+    tensor_even = tensor[:, :, :, 0::2]  # x1, x3, x5, ...
+    tensor_odd = tensor[:, :, :, 1::2]  # x2, x4, x6, ...
+
+    # 6. 应用RoPE旋转公式
+    # 对于每个维度对(x_{2i}, x_{2i+1})，旋转公式为：
+    # x'_{2i}   = x_{2i} * cos(θ) - x_{2i+1} * sin(θ)
+    # x'_{2i+1} = x_{2i} * sin(θ) + x_{2i+1} * cos(θ)
+    rotated_even = tensor_even * cos_angles - tensor_odd * sin_angles
+    rotated_odd = tensor_even * sin_angles + tensor_odd * cos_angles
+
+    # 7. 重新组合偶数和奇数维度
+    # 创建输出tensor
+    output = torch.zeros_like(tensor)
+    output[:, :, :, 0::2] = rotated_even  # 偶数位置
+    output[:, :, :, 1::2] = rotated_odd  # 奇数位置
+
+    return output
+
+
 def run_transformer_block(
     d_model: int,
     num_heads: int,
@@ -345,11 +416,71 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
+    import math
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    def get_rms_norm(name: str):
+        from my_code.rms_norm import RMSNorm
+        rms_norm = RMSNorm(d_model=d_model)
+        rms_norm.update_weight(weights.get(name))
+        return rms_norm
 
+    # ***********************************************************
+    # ***********************************************************
+    # 1. 先经过rms_norm的处理
+    first_rms_norm = get_rms_norm(name="ln1.weight")
+    in_features = in_features.to(device=device)
+    after_first_norm = first_rms_norm.forward(in_features)
+    # ***********************************************************
+    # ***********************************************************
+    # 2. 输入增加RopE
+    after_rope = after_first_norm # 增加RoPE相关的处理
+    # todo: 实现rope
+    # ***********************************************************
+    # ***********************************************************
+    # 3. 经过MHA处理
+    mha_input = after_rope
+    batch_size = in_features.shape[0]
+    sequence_length = in_features.shape[1]
+    q_weight = weights.get("attn.q_proj.weight").to(device)  # [d_model, d_model]
+    k_weight = weights.get("attn.k_proj.weight").to(device)  # [d_model, d_model]
+    v_weight = weights.get("attn.v_proj.weight").to(device)  # [d_model, d_model]
+    output_proj_weight = weights.get("attn.output_proj.weight").to(device)
+    # 下面经过系列操作直接将输入数据维度转成[batch、head_num、sequence、d_model//num_heads]
+    Q = (mha_input @ q_weight.T).view(batch_size, sequence_length, num_heads, d_model // num_heads).transpose(1, 2)
+    K = (mha_input @ k_weight.T).view(batch_size, sequence_length, num_heads, d_model // num_heads).transpose(1, 2)
+    V = (mha_input @ v_weight.T).view(batch_size, sequence_length, num_heads, d_model // num_heads).transpose(1, 2)
+    #  [batch、head_num、sequence、d_model//num_heads] [batch、head_num、d_model//num_heads、sequence]
+    #  [batch、head_num、sequence、sequence]
 
+    Q = apply_rope(Q, max_seq_len, theta)
+    K = apply_rope(K, max_seq_len, theta)
 
+    before_softmax = Q @ K.transpose(-1, -2) / math.sqrt(d_model // num_heads)
+    mask = torch.triu(torch.ones(sequence_length, sequence_length), diagonal=1).bool().to(device)
+    after_mask = before_softmax.masked_fill(mask, float('-inf'))
+    after_softmax = torch.softmax(after_mask, dim=-1)
+    # [batch、head_num、sequence、d_model//num_heads]
+    after_v = after_softmax @ V
+    # [batch、sequence、d_model]
+    after_concat = after_v.transpose(1, 2).contiguous().view(batch_size, sequence_length, -1)
+    # [batch、sequence、d_model] 维度不一样还好，都是d_model看不出来了
+    attention_output = after_concat @ output_proj_weight.T + mha_input
+    # ***********************************************************
+    # ***********************************************************
+    # 4. FFN开始之前先做一次Norm
+    ffn_input = attention_output
+    second_rms_norm = get_rms_norm(name="ln2.weight")
+    after_norm2 = second_rms_norm.forward(ffn_input)
 
-    raise NotImplementedError
+    w1 = weights.get("ffn.w1.weight").to(device) # [d_model, d_ff]
+    w2 = weights.get("ffn.w2.weight").to(device) # [d_ff, d_model]
+    w3 = weights.get("ffn.w3.weight").to(device) # [d_model, d_ff]
+
+    w1_x = after_norm2 @ w1 # [batch, sequence, d_ff]
+    w3_x = after_norm2 @ w3
+    before_w2 = torch.sigmoid(w1_x) * w1_x * w3_x # [batch, sequence, d_ff]
+    ffn_output = before_w2 @ w2 + attention_output # [batch, sequence, d_model]
+    return ffn_output
 
 
 def run_transformer_lm(
