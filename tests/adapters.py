@@ -345,6 +345,10 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
+
+
+
+
     raise NotImplementedError
 
 
@@ -450,7 +454,10 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    from my_code.rms_norm import RMSNorm
+    rms_norm = RMSNorm(d_model=d_model, eps=eps)
+    rms_norm.update_weight(weights)
+    return rms_norm.forward(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
