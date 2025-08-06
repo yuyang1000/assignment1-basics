@@ -518,13 +518,8 @@ def run_transformer_block(
     after_first_norm = first_rms_norm.forward(in_features)
     # ***********************************************************
     # ***********************************************************
-    # 2. 输入增加RopE
-    after_rope = after_first_norm # 增加RoPE相关的处理
-    # todo: 实现rope
-    # ***********************************************************
-    # ***********************************************************
     # 3. 经过MHA处理
-    mha_input = after_rope
+    mha_input = after_first_norm
     batch_size = in_features.shape[0]
     sequence_length = in_features.shape[1]
     q_weight = weights.get("attn.q_proj.weight").to(device)  # [d_model, d_model]
@@ -538,8 +533,10 @@ def run_transformer_block(
     #  [batch、head_num、sequence、d_model//num_heads] [batch、head_num、d_model//num_heads、sequence]
     #  [batch、head_num、sequence、sequence]
 
-    Q = apply_rope(Q, max_seq_len, theta)
-    K = apply_rope(K, max_seq_len, theta)
+    from my_code.rope import RoPE
+    rope = RoPE(d_model // num_heads, theta, max_seq_len)
+    Q = rope.forward(Q)
+    K = rope.forward(K)
 
     before_softmax = Q @ K.transpose(-1, -2) / math.sqrt(d_model // num_heads)
     mask = torch.triu(torch.ones(sequence_length, sequence_length), diagonal=1).bool().to(device)
@@ -550,7 +547,7 @@ def run_transformer_block(
     # [batch、sequence、d_model]
     after_concat = after_v.transpose(1, 2).contiguous().view(batch_size, sequence_length, -1)
     # [batch、sequence、d_model] 维度不一样还好，都是d_model看不出来了
-    attention_output = after_concat @ output_proj_weight.T + mha_input
+    attention_output = after_concat @ output_proj_weight.T + in_features
     # ***********************************************************
     # ***********************************************************
     # 4. FFN开始之前先做一次Norm
@@ -562,10 +559,10 @@ def run_transformer_block(
     w2 = weights.get("ffn.w2.weight").to(device) # [d_ff, d_model]
     w3 = weights.get("ffn.w3.weight").to(device) # [d_model, d_ff]
 
-    w1_x = after_norm2 @ w1 # [batch, sequence, d_ff]
-    w3_x = after_norm2 @ w3
+    w1_x = after_norm2 @ w1.T # [batch, sequence, d_ff]
+    w3_x = after_norm2 @ w3.T
     before_w2 = torch.sigmoid(w1_x) * w1_x * w3_x # [batch, sequence, d_ff]
-    ffn_output = before_w2 @ w2 + attention_output # [batch, sequence, d_model]
+    ffn_output = before_w2 @ w2.T + attention_output # [batch, sequence, d_model]
     return ffn_output
 
 
