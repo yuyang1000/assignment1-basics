@@ -266,6 +266,87 @@ def run_multihead_self_attention_with_rope(
     raise NotImplementedError
 
 
+def rope2(
+    d_k: int,
+    theta: float,
+    max_seq_len: int,
+    in_query_or_key: Float[Tensor, " ... sequence_length d_k"],
+    token_positions: Int[Tensor, " ... sequence_length"],
+) -> Float[Tensor, " ... sequence_length d_k"]:
+    # 向量化实现的 RoPE，支持任意批次维度，性能更佳
+    import torch, math
+
+    if d_k % 2 != 0:
+        raise ValueError("d_k must be even for RoPE.")
+
+    device, dtype = in_query_or_key.device, in_query_or_key.dtype
+    half_dim = d_k // 2
+
+    # 预计算各维度频率 1 / (theta^(2i/d_k))，形状 [half_dim]
+    dim_indices = torch.arange(half_dim, device=device, dtype=dtype)
+    freqs = 1.0 / (theta ** (2 * dim_indices / d_k))
+
+    # token_positions 可能缺少批次维度，这里广播到输入的前置维度
+    pos = token_positions.to(device=device, dtype=dtype)
+    while pos.ndim < in_query_or_key.ndim - 1:
+        pos = pos.unsqueeze(0)
+
+    # 计算旋转角度 (..., seq_len, half_dim)
+    angle = pos.unsqueeze(-1) * freqs  # 广播
+    cos, sin = torch.cos(angle), torch.sin(angle)
+
+    # 拆分偶数/奇数维度
+    even = in_query_or_key[..., 0::2]
+    odd = in_query_or_key[..., 1::2]
+
+    # 应用旋转
+    rotated_even = even * cos - odd * sin
+    rotated_odd = even * sin + odd * cos
+
+    # 合并结果
+    out = torch.empty_like(in_query_or_key)
+    out[..., 0::2] = rotated_even
+    out[..., 1::2] = rotated_odd
+    return out
+
+def rope1(
+    d_k: int,
+    theta: float,
+    max_seq_len: int,
+    in_query_or_key: Float[Tensor, " ... sequence_length d_k"],
+    token_positions: Int[Tensor, " ... sequence_length"],
+) -> Float[Tensor, " ... sequence_length d_k"]:
+
+    group_num = d_k // 2
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    group_tensor = torch.arange(group_num).to(device=device)
+
+    # 这只是当token_index==1的时候的角度
+    basic_angles = 1.0 / torch.pow(theta, group_tensor / group_num)  # [d_k//2]
+    basic_angles = basic_angles.unsqueeze(0) # [1, 32]
+    # token_position的维度是12，最后我们期望的是12 * 32，对于每个位置都有32个角度
+    pos = token_positions.to(device=device)
+
+    in_query_or_key = in_query_or_key.to(device)
+
+    while pos.ndim < in_query_or_key.ndim - 1: # 跟输入对齐，输入可以是[batch、head、sequence、last]
+        pos = pos.unsqueeze(0) # 先补齐前面的维度
+    pos = pos.unsqueeze(-1)    # 然后补齐最后的维度，pos只可以对齐sequence，最后变成[1,  1, 12, 1]，如果是pos是2维的也没问题，很巧妙
+    angle = pos * basic_angles # 广播 [1, 12, 1][1, 32] 比较有意思的还是理解广播的概念！！！
+
+    sin, cos = torch.sin(angle), torch.cos(angle) # [1, 12, 32]
+
+    even = in_query_or_key[..., 0::2]  # [..., 12, 32]
+    odd = in_query_or_key[..., 1::2]   # [..., 12, 32]
+
+    rotated_even = even * cos - odd * sin # [batch、head、sequence、32]
+    rotated_odd = even * sin + odd * cos  # [batch、head、sequence、32]
+
+    out = torch.empty_like(in_query_or_key) # [batch、head、sequence、64]
+    out[..., 0::2] = rotated_even # [batch、head、sequence、32]
+    out[..., 1::2] = rotated_odd  # [batch、head、sequence、32]
+    return out
+
 def run_rope(
     d_k: int,
     theta: float,
@@ -277,7 +358,7 @@ def run_rope(
     Run RoPE for a given input tensor.
 
     Args:
-        d_k (int): Embedding dimension size for the query or key tensor.
+        d_k (int): Embedding dimension size for the query or key tensor.(QK的维度是一样的)
         theta (float): RoPE parameter.
         max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
         in_query_or_key (Float[Tensor, "... sequence_length d_k"]): Input tensor to run RoPE on.
@@ -285,7 +366,12 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    # return rope2(d_k, theta, max_seq_len, in_query_or_key, token_positions)
+    # return rope1(d_k, theta, max_seq_len, in_query_or_key, token_positions)
+    from my_code.rope import RoPE
+
+    rope = RoPE(d_k, theta, max_seq_len)
+    return rope.forward(in_query_or_key, token_positions)
 
 
 def apply_rope(tensor, max_seq_len, theta=10000.0):
