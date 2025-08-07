@@ -23,7 +23,7 @@ class RoPE(torch.nn.Module):
             pos = token_positions.to(self.device)  # 最后的维度是[sequence]
         else:
             pos = torch.arange(in_query_or_key.shape[-2]).to(self.device)
-        while pos.ndim < in_query_or_key.ndim - 1: # 为了跟输入匹配[1,1,sequence] 前面有几个1并不重要
+        while pos.ndim < in_query_or_key.ndim - 1: # 为了跟输入匹配[1,1,sequence] 前面有几个1并不重要（减掉是为了去除后面的维度）
             pos = pos.unsqueeze(0)
 
         pos = pos.unsqueeze(-1) # 为了跟输入匹配[1,1,sequence,1] 前面有几个1并不重要

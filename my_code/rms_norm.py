@@ -1,5 +1,4 @@
 import torch
-from sympy.codegen.fnodes import dimension
 from torch import nn
 from torch import Tensor
 from torch.nn import Parameter

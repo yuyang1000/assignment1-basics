@@ -645,8 +645,50 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    from my_code.llm import LLM, TransformerBlock
+    from my_code.utils import get_device, to_device
 
+    d_model = d_model
+    num_heads = num_heads
+    d_ff = d_ff
+    rope_theta = rope_theta
+
+    llm = LLM()
+    llm.embedding = to_device(weights.get("token_embeddings.weight"))
+    llm.final_norm = to_device(weights.get("ln_final.weight"))
+    llm.output_embedding = to_device(weights.get("lm_head.weight"))
+
+    for layer_index in range(num_layers):
+        l1_norm_weight = weights.get(f"layers.{layer_index}.ln1.weight")
+        q_proj_weight = weights.get(f"layers.{layer_index}.attn.q_proj.weight")
+        k_proj_weight = weights.get(f"layers.{layer_index}.attn.k_proj.weight")
+        v_proj_weight = weights.get(f"layers.{layer_index}.attn.v_proj.weight")
+        output_proj_weight = weights.get(f"layers.{layer_index}.attn.output_proj.weight")
+
+        l2_norm_weight = weights.get(f"layers.{layer_index}.ln2.weight")
+        w1_weight = weights.get(f"layers.{layer_index}.ffn.w1.weight")
+        w2_weight = weights.get(f"layers.{layer_index}.ffn.w2.weight")
+        w3_weight = weights.get(f"layers.{layer_index}.ffn.w3.weight")
+
+        block = TransformerBlock()
+
+        block.norm1_weight = to_device(l1_norm_weight)
+        block.q_weight = to_device(q_proj_weight)
+        block.k_weight = to_device(k_proj_weight)
+        block.v_weight = to_device(v_proj_weight)
+        block.o_weight = to_device(output_proj_weight)
+
+        block.norm2_weight = to_device(l2_norm_weight)
+        block.w1_weight = to_device(w1_weight)
+        block.w2_weight = to_device(w2_weight)
+        block.w3_weight = to_device(w3_weight)
+
+        block.theta = rope_theta
+        block.num_heads = num_heads
+
+        llm.add_layer(block)
+
+    return llm.forward(in_indices)
 
 def run_rmsnorm(
     d_model: int,
