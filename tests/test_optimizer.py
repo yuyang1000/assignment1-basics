@@ -36,7 +36,8 @@ def test_adamw(numpy_snapshot):
     """
     # expected_weights = torch.load(FIXTURES_PATH / "adamw_expected_params.pt")
     pytorch_weights = _optimize(torch.optim.AdamW)
-    actual_weights = _optimize(get_adamw_cls())
+    from my_code.adamw import AdamW
+    actual_weights = _optimize(AdamW)
 
     # Might need to exit early if the weights match pytorch, since that should also be valid
     matches_pytorch = torch.allclose(actual_weights, pytorch_weights, atol=1e-4)

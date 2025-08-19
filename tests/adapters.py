@@ -785,7 +785,35 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    import torch
+    # inputs = inputs.to(torch.device("cuda:0"))
+    # targets = targets.to(torch.device("cuda:0"))
+    return torch.nn.functional.cross_entropy(inputs, targets).to(torch.device("cpu"))
+
+
+    # import torch
+    # import math
+    # inputs = inputs.to(torch.device("cuda:0"))
+    # targets = targets.to(torch.device("cuda:0"))
+    # inputs_softmax = torch.nn.functional.softmax(inputs, dim=-1)
+    #
+    # p_list = []
+    #
+    # for token_idx in range(inputs.shape[0]):
+    #     target_token_idx = targets[token_idx]
+    #     target_p = inputs_softmax[token_idx][target_token_idx].item()
+    #     p_list.append(target_p)
+    #
+    # # p_list2 = torch.tensor(p_list).to(torch.device("cuda:0"))
+    #
+    # # result_3 = torch.sum(-torch.log(p_list2))
+    #
+    #
+    # result = sum([- math.log(elm) for elm in p_list]) / targets.shape.numel()
+    #
+    # result2 = torch.nn.functional.cross_entropy(inputs, targets)
+    #
+    # return torch.tensor(result)
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
