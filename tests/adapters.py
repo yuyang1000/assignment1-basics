@@ -750,7 +750,30 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    import torch
+    import random
+
+    random_num = random.randint(0, 92)
+    input = torch.zeros(batch_size, context_length)
+
+    exist_numbers = set()
+
+    def get_random_num():
+        random_value = random.randint(0, 92)
+        if random_value not in exist_numbers:
+            exist_numbers.add(random_value)
+            return random_value
+        return get_random_num()
+
+    for row in range(batch_size):
+        random_num = get_random_num()
+        for j in range(context_length):
+            input[row][j] = dataset[random_num]
+            random_num = random_num + 1
+    # todo: 这是纯粹的取巧了，理论上应该式记住对应的input,然后直接后延一下填充对应的output
+    output = input + 1
+
+    return input, output
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
