@@ -860,7 +860,15 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    import math
+    if it < warmup_iters:
+        return it / warmup_iters * max_learning_rate
+    elif cosine_cycle_iters >= it >= warmup_iters:
+        return (min_learning_rate
+                + (1 + math.cos(math.pi * (it - warmup_iters) / (cosine_cycle_iters - warmup_iters)))
+                / 2 * (max_learning_rate - min_learning_rate))
+    else:
+        return min_learning_rate
 
 
 def run_save_checkpoint(
