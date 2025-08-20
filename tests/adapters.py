@@ -871,7 +871,8 @@ def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    from my_code.adamw import AdamW
+    return AdamW
 
 
 def run_get_lr_cosine_schedule(
@@ -926,8 +927,13 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
-
+    import torch
+    data = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "iteration": iteration,
+    }
+    torch.save(data, out)
 
 def run_load_checkpoint(
     src: str | os.PathLike | BinaryIO | IO[bytes],
@@ -947,8 +953,14 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    import torch
 
+    data = torch.load(src)
+    assert data is not None, "data can't be null."
+    iteration = data['iteration']
+    model.load_state_dict(data['model'])
+    optimizer.load_state_dict(data['optimizer'])
+    return iteration
 
 def get_tokenizer(
     vocab: dict[int, bytes],
